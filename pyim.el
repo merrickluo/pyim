@@ -1199,6 +1199,7 @@ If FORCE is non-nil, FORCE build."
   "Start pyim.
 TODO: Document NAME ACTIVE-FUNC RESTART SAVE-PERSONAL-DCACHE REFRESH-COMMON-DCACHE"
   (interactive)
+  (liberime-clear-composition)
   (mapc 'kill-local-variable pyim-local-variable-list)
   (mapc 'make-local-variable pyim-local-variable-list)
   (when (and restart save-personal-dcache)
@@ -2010,20 +2011,41 @@ Return the input string."
 (defun pyim-string-emptyp (str)
   (not (string< "" str)))
 
+(defun pyim-handle-rime-refresh()
+  (let ((commit (liberime-get-commit))
+        (context (liberime-get-context)))
+    (when commit
+      (setq pyim-dagger-str commit)
+      (pyim-terminate-translation))
+    (when context
+      (let* ((preview (alist-get 'commit-text-preview context))
+             (composition (alist-get 'composition context))
+             (menu (alist-get 'menu context))
+             (preedit (alist-get 'preedit composition))
+             (candidates (alist-get 'candidates menu)))
+        (setq pyim-dagger-str preview)
+        (setq pyim-entered-code (replace-regexp-in-string " " "-" preedit))
+        (setq pyim-current-pos 1)
+        (setq pyim-page-length 10)
+        (setq pyim-current-choices (list candidates))
+        (pyim-dagger-refresh)
+        (pyim-page-refresh)))))
+
 (defun pyim-self-insert-command ()
   "如果在 pyim-first-char 列表中，则查找相应的词条，否则停止转换，插入对应的字符"
   (interactive "*")
   ;; (message "%s" (current-buffer))
   (if (pyim-input-chinese-p)
-      (progn (setq pyim-entered-code
-                   (concat pyim-entered-code (char-to-string last-command-event)))
-             (pyim-handle-entered-code))
+      (progn
+        (liberime-process-key last-command-event)
+        (pyim-handle-rime-refresh))
     (pyim-dagger-append (pyim-translate last-command-event))
     (pyim-terminate-translation)))
 
 (defun pyim-terminate-translation ()
   "Terminate the translation of the current key."
   (setq pyim-translating nil)
+  (liberime-clear-composition)
   (pyim-dagger-delete-string)
   (setq pyim-current-choices nil)
   (when (and (memq pyim-page-tooltip '(posframe child-frame))
@@ -2707,10 +2729,10 @@ Return the input string."
          (choice (pyim-subseq choices start end))
          (pos (1- (min pyim-current-pos (length choices))))
          rest)
-    (setq pyim-dagger-str
-          (concat (substring pyim-dagger-str 0
-                             pyim-code-position)
-                  (pyim-choice (nth pos choices))))
+    ;; (setq pyim-dagger-str
+    ;;       (concat (substring pyim-dagger-str 0
+    ;;                          pyim-code-position)
+    ;;               (pyim-choice (nth pos choices))))
     (setq rest (mapconcat
                 #'(lambda (py)
                     (concat (car py) (cdr py)))
@@ -2949,15 +2971,19 @@ minibuffer 原来显示的信息和 pyim 选词框整合在一起显示
       (progn
         (pyim-dagger-append (pyim-translate last-command-event))
         (pyim-terminate-translation))
-    (let ((new (+ pyim-current-pos (* pyim-page-length arg) 1)))
-      (setq pyim-current-pos (if (> new 0) new 1)
-            pyim-current-pos (pyim-page-start))
-      (pyim-dagger-refresh)
-      (pyim-page-refresh))))
+    (progn
+      (liberime-process-key (string-to-char "="))
+      (pyim-handle-rime-refresh))))
 
 (defun pyim-page-previous-page (arg)
   (interactive "p")
-  (pyim-page-next-page (- arg)))
+  (if (= (length pyim-entered-code) 0)
+      (progn
+        (pyim-dagger-append (pyim-translate last-command-event))
+        (pyim-terminate-translation))
+    (progn
+      (liberime-process-key (string-to-char "-"))
+      (pyim-handle-rime-refresh))))
 
 (defun pyim-page-next-word (arg)
   (interactive "p")
@@ -3069,29 +3095,8 @@ tooltip 选词框中显示。
       (progn
         (setq pyim-dagger-str (pyim-translate last-command-event))
         (pyim-terminate-translation))
-    (let ((str (pyim-choice (nth (1- pyim-current-pos) (car pyim-current-choices))))
-          scode-list)
-      (pyim-create-or-rearrange-word str t)
-      (setq pyim-code-position (+ pyim-code-position (length str)))
-      (if (>= pyim-code-position (length (car pyim-scode-list)))
-                                        ; 如果是最后一个，检查
-                                        ; 是不是在文件中，没有的话，创
-                                        ; 建这个词
-          (progn
-            (if (not (member pyim-dagger-str (car pyim-current-choices)))
-                (pyim-create-or-rearrange-word pyim-dagger-str))
-            (pyim-terminate-translation)
-            ;; pyim 使用这个 hook 来处理联想词。
-            (run-hooks 'pyim-page-select-finish-hook))
-        (setq scode-list
-              (delete-dups (mapcar
-                            #'(lambda (scode)
-                                (nthcdr pyim-code-position scode))
-                            pyim-scode-list)))
-        (setq pyim-current-choices (list (pyim-choices-get scode-list pyim-default-scheme))
-              pyim-current-pos 1)
-        (pyim-dagger-refresh)
-        (pyim-page-refresh)))))
+    (if (liberime-select-candidate (- pyim-current-pos 1))
+        (pyim-handle-rime-refresh))))
 
 (defun pyim-page-select-word-by-number (&optional n)
   "使用数字编号来选择对应的词条。"
@@ -3461,8 +3466,9 @@ pyim 的 translate-trigger-char 要占用一个键位，为了防止用户
   (interactive)
   (if (> (length pyim-entered-code) 1)
       (progn
-        (setq pyim-entered-code (substring pyim-entered-code 0 -1))
-        (pyim-handle-entered-code))
+        ;; FIXME should have a generic way to pass special keycode
+        (liberime-process-key 65288)
+        (pyim-handle-rime-refresh))
     (setq pyim-dagger-str "")
     (pyim-terminate-translation)))
 
