@@ -1075,6 +1075,9 @@ pyim 总是使用 emacs-async 包来生成 dcache.")
     pyim-code-position)
   "A list of buffer local variable.")
 
+(defvar pyim-rime-unread-string
+  "")
+
 (dolist (var pyim-local-variable-list)
   (make-variable-buffer-local var)
   (put var 'permanent-local t))
@@ -1941,6 +1944,7 @@ Return the input string."
 
         (setq pyim-dagger-str ""
               pyim-entered-code (or str "")
+              pyim-rime-unread-string (or str "")
               pyim-translating t)
 
         (when key
@@ -2040,6 +2044,11 @@ Return the input string."
   (if (pyim-input-chinese-p)
       (if (eq pyim-default-scheme 'rime)
           (progn
+            (unless (pyim-string-emptyp pyim-rime-unread-string)
+              (let ((len (length pyim-rime-unread-string)))
+                (dotimes (i len)
+                  (liberime-process-key (aref pyim-rime-unread-string i)))
+                (setq pyim-rime-unread-string "")))
             (liberime-process-key last-command-event)
             (pyim-handle-rime-refresh))
         (progn (setq pyim-entered-code
